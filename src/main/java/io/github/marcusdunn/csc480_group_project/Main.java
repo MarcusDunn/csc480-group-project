@@ -33,45 +33,46 @@ public class Main {
             logger.log(Level.SEVERE, e, () -> "Failed to create temp directory");
             throw new RuntimeException(e);
         }
-        final var interestingThingExtractors = List.of(
-                new FullCommitMessage(),
-                new CommitDateTime()
-        );
-
-        printRepoToCsv(remote, since, temp, interestingThingExtractors);
-    }
-
-    private static void printRepoToCsv(String remote, LocalDate since, Path temp, List<? extends ThingWeAreInterestedIn<?>> interestingThingExtractors) {
         try (final var git = Git.cloneRepository().setURI(remote).setDirectory(temp.toFile()).call()) {
-            logger.fine(() -> "Opened repo " + git.getRepository().getDirectory());
-            try (final var out = new FileWriter("output.csv")) {
-                logger.fine("created output.csv");
-                final var csvFormat = CSVFormat.DEFAULT
-                        .builder()
-                        .setHeader(interestingThingExtractors
-                                .stream()
-                                .map(ThingWeAreInterestedIn::getName)
-                                .toArray(String[]::new))
-                        .build();
-                try (final var csvPrinter = new CSVPrinter(out, csvFormat)) {
-                    final var interestingThings = getInterestingThings(git, since, interestingThingExtractors);
-                    interestingThings.forEach(stream -> {
-                        Object[] values = stream.toArray(Object[]::new);
-                        try {
-                            logger.fine(() -> "added record " + Arrays.toString(values));
-                            csvPrinter.printRecord(values);
-                        } catch (IOException e) {
-                            logger.log(Level.SEVERE, e, () -> "Failed to print a record: " + Arrays.toString(values));
-                        }
-                    });
-                } catch (IOException e) {
-                    logger.log(Level.SEVERE, e, () -> "Failed to open a csvPrinter at: " + out);
-                }
-            } catch (IOException e) {
-                logger.log(Level.SEVERE, e, () -> "Failed to open a fileWriter at:  output.csv");
-            }
+            final var interestingThingExtractors = List.of(
+                    new FullCommitMessage(),
+                    new CommitDateTime(),
+                    new CommitDiff(git)
+            );
+
+            printRepoToCsv(git, since, temp, interestingThingExtractors);
         } catch (GitAPIException e) {
             logger.log(Level.SEVERE, e, () -> "Failed to open repo at " + remote);
+        }
+    }
+
+    private static void printRepoToCsv(Git git, LocalDate since, Path temp, List<? extends ThingWeAreInterestedIn<?>> interestingThingExtractors) {
+        logger.fine(() -> "Opened repo " + git.getRepository().getDirectory());
+        try (final var out = new FileWriter("output.csv")) {
+            logger.fine("created output.csv");
+            final var csvFormat = CSVFormat.DEFAULT
+                    .builder()
+                    .setHeader(interestingThingExtractors
+                            .stream()
+                            .map(ThingWeAreInterestedIn::getName)
+                            .toArray(String[]::new))
+                    .build();
+            try (final var csvPrinter = new CSVPrinter(out, csvFormat)) {
+                final var interestingThings = getInterestingThings(git, since, interestingThingExtractors);
+                interestingThings.forEach(stream -> {
+                    Object[] values = stream.toArray(Object[]::new);
+                    try {
+                        logger.fine(() -> "added record " + Arrays.toString(values));
+                        csvPrinter.printRecord(values);
+                    } catch (IOException e) {
+                        logger.log(Level.SEVERE, e, () -> "Failed to print a record: " + Arrays.toString(values));
+                    }
+                });
+            } catch (IOException e) {
+                logger.log(Level.SEVERE, e, () -> "Failed to open a csvPrinter at: " + out);
+            }
+        } catch (IOException e) {
+            logger.log(Level.SEVERE, e, () -> "Failed to open a fileWriter at:  output.csv");
         }
         try {
             Files.walkFileTree(temp, DeletingFileVisitor.INSTANCE);
