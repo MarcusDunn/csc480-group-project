@@ -1,11 +1,12 @@
 package io.github.marcusdunn.csc480_group_project;
 
 import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.diff.DiffFormatter;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Optional;
 import java.util.logging.Level;
@@ -21,7 +22,7 @@ public class CommitDiff implements ThingWeAreInterestedIn<String> {
 
     @Override
     public String getName() {
-        return null;
+        return "commit diff";
     }
 
     @Override
@@ -36,19 +37,15 @@ public class CommitDiff implements ThingWeAreInterestedIn<String> {
             if (parent.isEmpty()) {
                 return null;
             } else {
+                final var byteArrayOutputStream = new ByteArrayOutputStream();
+                final var diffFormatter = new DiffFormatter(byteArrayOutputStream);
+                diffFormatter.setRepository(git.getRepository());
                 parentTreeParser.reset(git.getRepository().newObjectReader(), parent.get());
-                return git
-                        .diff()
-                        .setOldTree(currentTreeParser)
-                        .setOldTree(parentTreeParser)
-                        .call()
-                        .stream()
-                        .map(diffEntry -> diffEntry.getNewPath() + " " + diffEntry.getChangeType())
-                        .toList()
-                        .toString();
+                diffFormatter.format(currentTreeParser, parentTreeParser);
+                return byteArrayOutputStream.toString();
             }
 
-        } catch (GitAPIException | IOException e) {
+        } catch (IOException e) {
             logger.log(Level.SEVERE, e, () -> "Failed to get diff for commit " + commit);
             return null;
         }
