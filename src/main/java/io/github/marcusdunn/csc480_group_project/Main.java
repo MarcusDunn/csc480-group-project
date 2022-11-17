@@ -6,22 +6,18 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.revwalk.RevCommit;
 
-import java.io.BufferedOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -76,7 +72,7 @@ public class Main {
 
     private static void printRepoToCsv(Git git, LocalDate since, Path temp, List<? extends ThingWeAreInterestedIn<?>> interestingThingExtractors) {
         String[] split = git.getRepository().getConfig().getString("remote", "origin", "url").split("/");
-        final var fileName = split[split.length - 1].replace(".git", "");
+        final var fileName = split[split.length - 1].replace(".git", "") + ".csv";
         try (final var out = new FileWriter(fileName)) {
             logger.info(() -> "created " + fileName);
             final var csvFormat = CSVFormat.DEFAULT
