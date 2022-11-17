@@ -6,16 +6,22 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.revwalk.RevCommit;
 
+import java.io.BufferedOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -23,8 +29,23 @@ public class Main {
     private static final Logger logger = Logger.getLogger(Main.class.getName());
 
     public static void main(String[] args) {
-        final var remote = getFromEnv("REMOTE").orElseThrow();
-        final var since = LocalDate.MIN;
+        final var remote = getFromEnv("REMOTE").orElseThrow().split(";");
+        final var since = LocalDate.now().minusYears(2);
+        Arrays
+                .stream(remote)
+                .map(s -> new Thread(() -> doTheThing(s, since)))
+                .peek(Thread::start)
+                .toList()
+                .forEach(thread -> {
+                    try {
+                        thread.join();
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+    }
+
+    private static void doTheThing(String remote, LocalDate since) {
         final Path temp;
         try {
             temp = Files.createTempDirectory("csc480_group_project");
@@ -33,13 +54,20 @@ public class Main {
             logger.log(Level.SEVERE, e, () -> "Failed to create temp directory");
             throw new RuntimeException(e);
         }
+        logger.info("cloning " + remote);
         try (final var git = Git.cloneRepository().setURI(remote).setDirectory(temp.toFile()).call()) {
+            logger.info("cloned " + remote);
+            final var variableDeclarationsWithVar = new CommitDiffLinesMatching("variable declarations with var", new DiffHelper(git), Pattern.compile(FancyRegexHaver.variableDeclarationsWithVar));
+            final var variableDeclarationsWithType = new CommitDiffLinesMatching("variable declarations with type", new DiffHelper(git), Pattern.compile(FancyRegexHaver.variableDeclarationsWithType));
             final var interestingThingExtractors = List.of(
                     new FullCommitMessage(),
-                    new CommitDateTime(),
-                    new CommitDiff(git)
+                    new CommitDateTime().map(ZonedDateTime::toString),
+                    new CommitDiff(new DiffHelper(git)),
+                    variableDeclarationsWithVar.map(opt -> opt.orElse(List.of()).toString()),
+                    variableDeclarationsWithVar.map("variable declarations with var count", opt -> opt.orElse(List.of()).size()).map(Long::toString),
+                    variableDeclarationsWithType.map(opt -> opt.orElse(List.of()).toString()),
+                    variableDeclarationsWithType.map("variable declarations with type count", opt -> opt.orElse(List.of()).size()).map(Long::toString)
             );
-
             printRepoToCsv(git, since, temp, interestingThingExtractors);
         } catch (GitAPIException e) {
             logger.log(Level.SEVERE, e, () -> "Failed to open repo at " + remote);
@@ -47,9 +75,10 @@ public class Main {
     }
 
     private static void printRepoToCsv(Git git, LocalDate since, Path temp, List<? extends ThingWeAreInterestedIn<?>> interestingThingExtractors) {
-        logger.fine(() -> "Opened repo " + git.getRepository().getDirectory());
-        try (final var out = new FileWriter("output.csv")) {
-            logger.fine("created output.csv");
+        String[] split = git.getRepository().getConfig().getString("remote", "origin", "url").split("/");
+        final var fileName = split[split.length - 1].replace(".git", "");
+        try (final var out = new FileWriter(fileName)) {
+            logger.info(() -> "created " + fileName);
             final var csvFormat = CSVFormat.DEFAULT
                     .builder()
                     .setHeader(interestingThingExtractors
@@ -60,7 +89,7 @@ public class Main {
             try (final var csvPrinter = new CSVPrinter(out, csvFormat)) {
                 final var interestingThings = getInterestingThings(git, since, interestingThingExtractors);
                 interestingThings.forEach(stream -> {
-                    Object[] values = stream.toArray(Object[]::new);
+                    final var values = stream.toArray(Object[]::new);
                     try {
                         logger.fine(() -> "added record " + Arrays.toString(values));
                         csvPrinter.printRecord(values);
@@ -83,13 +112,11 @@ public class Main {
     }
 
     private static Stream<Stream<?>> getInterestingThings(Git git, LocalDate since, List<? extends ThingWeAreInterestedIn<?>> things) {
-        return getCommitsSince(git, since).map(commit -> things.stream().map(thing -> thing.getThing(commit)));
-    }
-
-    private record Pair<F, S>(F first, S second) {
-        static <F, S> Pair<F, S> of(F first, S second) {
-            return new Pair<>(first, second);
-        }
+        return getCommitsSince(git, since)
+                .map(commit -> things
+                        .stream()
+                        .map(thing -> thing.getThing(commit))
+                );
     }
 
     private static Stream<RevCommit> getCommitsSince(Git git, LocalDate since) {
@@ -104,12 +131,12 @@ public class Main {
                                             .setMaxCount(CHUNK_SIZE)
                                             .call()
                             ),
-                            pair -> pair.second.iterator().hasNext(),
+                            pair -> pair.second().iterator().hasNext(),
                             (pair) -> {
                                 try {
                                     return Pair.of(
-                                            pair.first + CHUNK_SIZE,
-                                            git.log().setMaxCount(CHUNK_SIZE).setSkip(pair.first).call()
+                                            pair.first() + CHUNK_SIZE,
+                                            git.log().setMaxCount(CHUNK_SIZE).setSkip(pair.first()).call()
                                     );
                                 } catch (GitAPIException e) {
                                     logger.log(Level.SEVERE, e, () -> "Failed to get commits since " + since);
@@ -119,7 +146,7 @@ public class Main {
                     )
                     .flatMap(pair -> StreamSupport
                             .stream(
-                                    pair.second.spliterator(),
+                                    pair.second().spliterator(),
                                     false
                             )
                     )
