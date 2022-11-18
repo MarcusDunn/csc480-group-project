@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.regex.MatchResult;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -53,41 +54,28 @@ public class Main {
         logger.info("cloning " + remote);
         try (final var git = Git.cloneRepository().setURI(remote).setDirectory(temp.toFile()).call()) {
             logger.info("cloned " + remote);
-            final var variableDeclarationsWithVar = new CommitDiffLinesMatching("variable declarations with var", new DiffHelper(git), Pattern.compile(FancyRegexHaver.variableDeclarationsWithVar));
-            final var variableDeclarationsWithType = new CommitDiffLinesMatching("variable declarations with type", new DiffHelper(git), Pattern.compile(FancyRegexHaver.variableDeclarationsWithType));
-            final var interestingThingExtractors = List.of(
-                    new FullCommitMessage(),
-                    new CommitDateTime().map(ZonedDateTime::toString),
-                    new CommitDiff(new DiffHelper(git)),
-                    variableDeclarationsWithVar.map(opt -> opt.orElse(List.of()).toString()),
-                    variableDeclarationsWithVar.map("variable declarations with var count", opt -> opt.orElse(List.of()).size()).map(Long::toString),
-                    variableDeclarationsWithType.map(opt -> opt.orElse(List.of()).toString()),
-                    variableDeclarationsWithType.map("variable declarations with type count", opt -> opt.orElse(List.of()).size()).map(Long::toString)
-            );
-            printRepoToCsv(git, since, temp, interestingThingExtractors);
+            printRepoToCsv(git, since, temp);
         } catch (GitAPIException e) {
             logger.log(Level.SEVERE, e, () -> "Failed to open repo at " + remote);
         }
     }
 
-    private static void printRepoToCsv(Git git, LocalDate since, Path temp, List<? extends ThingWeAreInterestedIn<?>> interestingThingExtractors) {
+    private static void printRepoToCsv(Git git, LocalDate since, Path temp) {
         String[] split = git.getRepository().getConfig().getString("remote", "origin", "url").split("/");
         final var fileName = split[split.length - 1].replace(".git", "") + ".csv";
         try (final var out = new FileWriter(fileName)) {
             logger.info(() -> "created " + fileName);
             final var csvFormat = CSVFormat.DEFAULT
                     .builder()
-                    .setHeader(interestingThingExtractors
-                            .stream()
-                            .map(ThingWeAreInterestedIn::getName)
-                            .toArray(String[]::new))
+                    .setHeader("line", "declaration_type", "diff_type", "date_added", "indentation")
                     .build();
             try (final var csvPrinter = new CSVPrinter(out, csvFormat)) {
-                final var interestingThings = getInterestingThings(git, since, interestingThingExtractors);
+                final var interestingThings = getInterestingThings(git, since, new CommitDiff(new DiffHelper(git)));
                 interestingThings.forEach(stream -> {
                     final var values = stream.toArray(Object[]::new);
+                    logger.info(() -> Arrays.toString(values));
                     try {
-                        logger.fine(() -> "added record " + Arrays.toString(values));
+                        logger.fine(() -> "adding record " + Arrays.toString(values));
                         csvPrinter.printRecord(values);
                     } catch (IOException e) {
                         logger.log(Level.SEVERE, e, () -> "Failed to print a record: " + Arrays.toString(values));
@@ -107,11 +95,36 @@ public class Main {
         }
     }
 
-    private static Stream<Stream<?>> getInterestingThings(Git git, LocalDate since, List<? extends ThingWeAreInterestedIn<?>> things) {
+    private static Stream<Stream<String>> getInterestingThings(
+            Git git,
+            LocalDate since,
+            CommitDiff commitDiff
+    ) {
+        Pattern withVar = Pattern.compile(FancyRegexHaver.variableDeclarationsWithVar);
+        Pattern withType = Pattern.compile(FancyRegexHaver.variableDeclarationsWithType);
         return getCommitsSince(git, since)
-                .map(commit -> things
+                .flatMap(commit -> commitDiff.data(commit)
                         .stream()
-                        .map(thing -> thing.getThing(commit))
+                        .flatMap(diff -> diff.lines()
+                                .filter(withVar.asMatchPredicate().or(withType.asMatchPredicate()))
+                                .map(declaration -> Stream.of(
+                                        declaration,
+                                        withVar.asMatchPredicate().test(declaration) ? "var" : "type",
+                                        switch (declaration.charAt(0)) {
+                                            case '+' -> "add";
+                                            case '-' -> "remove";
+                                            default -> "unknown";
+                                        },
+                                        commit.getAuthorIdent().getWhen().toInstant().atZone(ZonedDateTime.now().getZone()).toLocalDate().toString(),
+                                        String.valueOf(declaration
+                                                .replaceFirst("[+\\-]", "")
+                                                .replace("\t", "    ")
+                                                .chars()
+                                                .takeWhile(c -> c == ' ')
+                                                .count()
+                                        )
+                                ))
+                        )
                 );
     }
 
