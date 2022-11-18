@@ -11,26 +11,42 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
-import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.util.regex.MatchResult;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
+
+import static io.github.marcusdunn.csc480_group_project.FancyRegexHaver.variableDeclaration;
+import static io.github.marcusdunn.csc480_group_project.FancyRegexHaver.variableDeclarationsWithVar;
 
 public class Main {
     private static final Logger logger = Logger.getLogger(Main.class.getName());
 
     public static void main(String[] args) {
-        final var remote = getFromEnv("REMOTE").orElseThrow().split(";");
-        final var since = LocalDate.now().minusYears(2);
-        Arrays
-                .stream(remote)
-                .map(s -> new Thread(() -> doTheThing(s, since)))
+        final var remote = List.of(
+                "https://github.com/dropwizard/dropwizard",
+                "https://github.com/hibernate/hibernate-orm",
+                "https://github.com/sofastack/sofa-jraft",
+                "https://github.com/SeleniumHQ/selenium",
+                "https://github.com/open-telemetry/opentelemetry-java",
+                "https://github.com/vsilaev/tascalate-javaflow",
+                "https://github.com/shopizer-ecommerce/shopizer",
+                "https://github.com/eclipse/eclipse.jdt.ls",
+                "https://github.com/elastic/elasticsearch",
+                "https://github.com/gradle/gradle",
+                "https://github.com/spring-projects/spring-framework",
+                "https://github.com/google/error-prone",
+                "https://github.com/apache/tomcat",
+                "https://github.com/networknt/light-4j",
+                "https://github.com/INRIA/spoon"
+        );
+        // https://www.oracle.com/java/technologies/java-se-support-roadmap.html
+        final var java9ReleaseDate = LocalDate.of(2017, 8, 17);
+        remote
+                .stream()
+                .map(s -> new Thread(new StatusLogger(() -> doTheThing(s, java9ReleaseDate), s)))
                 .peek(Thread::start)
                 .toList()
                 .forEach(thread -> {
@@ -73,7 +89,6 @@ public class Main {
                 final var interestingThings = getInterestingThings(git, since, new CommitDiff(new DiffHelper(git)));
                 interestingThings.forEach(stream -> {
                     final var values = stream.toArray(Object[]::new);
-                    logger.info(() -> Arrays.toString(values));
                     try {
                         logger.fine(() -> "adding record " + Arrays.toString(values));
                         csvPrinter.printRecord(values);
@@ -93,6 +108,7 @@ public class Main {
         } catch (IOException e) {
             logger.warning("failed to delete temp directory " + temp);
         }
+        logger.info(() -> "finished writing to " + fileName);
     }
 
     private static Stream<Stream<String>> getInterestingThings(
@@ -100,22 +116,20 @@ public class Main {
             LocalDate since,
             CommitDiff commitDiff
     ) {
-        Pattern withVar = Pattern.compile(FancyRegexHaver.variableDeclarationsWithVar);
-        Pattern withType = Pattern.compile(FancyRegexHaver.variableDeclarationsWithType);
         return getCommitsSince(git, since)
                 .flatMap(commit -> commitDiff.data(commit)
                         .stream()
                         .flatMap(diff -> diff.lines()
-                                .filter(withVar.asMatchPredicate().or(withType.asMatchPredicate()))
+                                .filter(variableDeclaration.asMatchPredicate())
                                 .map(declaration -> Stream.of(
                                         declaration,
-                                        withVar.asMatchPredicate().test(declaration) ? "var" : "type",
+                                        variableDeclarationsWithVar.asMatchPredicate().test(declaration) ? "var" : "type",
                                         switch (declaration.charAt(0)) {
                                             case '+' -> "add";
                                             case '-' -> "remove";
                                             default -> "unknown";
                                         },
-                                        commit.getAuthorIdent().getWhen().toInstant().atZone(ZonedDateTime.now().getZone()).toLocalDate().toString(),
+                                        getLocalDate(commit).toString(),
                                         String.valueOf(declaration
                                                 .replaceFirst("[+\\-]", "")
                                                 .replace("\t", "    ")
@@ -159,30 +173,19 @@ public class Main {
                                     false
                             )
                     )
-                    .filter(commit -> commit
-                            .getAuthorIdent()
-                            .getWhen()
-                            .toInstant()
-                            .atZone(commit
-                                    .getAuthorIdent()
-                                    .getTimeZone()
-                                    .toZoneId()
-                            )
-                            .toLocalDate()
-                            .isAfter(since)
+                    .filter(commit -> getLocalDate(commit).isAfter(since)
                     );
         } catch (GitAPIException e) {
             throw new RuntimeException(e);
         }
     }
 
-    private static Optional<String> getFromEnv(String key) {
-        final var value = System.getenv(key);
-        if (value == null) {
-            logger.warning(() -> "Environment variable " + key + " is not set");
-            return Optional.empty();
-        } else {
-            return Optional.of(value);
-        }
+    private static LocalDate getLocalDate(RevCommit commit) {
+        return commit
+                .getAuthorIdent()
+                .getWhen()
+                .toInstant()
+                .atZone(commit.getCommitterIdent().getZoneId())
+                .toLocalDate();
     }
 }
